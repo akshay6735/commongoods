@@ -1,0 +1,121 @@
+Task 12 – Write-up Answers CommonGoods E-Commerce Project
+
+1.  What is React Context API and why is it better than prop drilling
+    for the cart? Give a real example from your code.
+
+React Context API is a way of sharing data between different React
+components without having to pass that data through every component
+using props.
+
+For the cart, this is useful because the cart is needed in different
+parts of the application, mainly the Navbar, product pages and Cart
+page. If I used prop drilling, I would have to pass the cart data
+through components that do not actually need to use it.
+
+In my project, I used CartContext to keep the cart items and cart
+functions in one place. For example, my CartContext has functions such
+as addToCart, removeFromCart and clearCart.
+
+A component can access it directly using:
+
+const { cartItems, addToCart } = useCart()
+
+So, for example, a ProductCard can call addToCart(product, quantity)
+directly instead of receiving the function from several parent
+components. This makes the code cleaner and easier to maintain.
+
+2.  Why does order_items store unit_price instead of reading the product
+    price at the time of display?
+
+The order_items table stores unit_price because the price of a product
+can change later.
+
+For example, suppose I buy a product for ₹2,500. Later, the admin
+changes the product price to ₹3,000. My old order should still show
+₹2,500 because that was the price when I actually placed the order.
+
+If the application always read the current price from the products
+table, old orders could show a different price after a price change.
+
+That is why order_items contains:
+
+unit_price DECIMAL(10,2) NOT NULL
+
+It keeps a record of the actual price used for that particular purchase.
+This is important for keeping the order history accurate.
+
+3.  What happens in your backend if a customer tries to order 10 units
+    of a product that only has 3 in stock? Show the exact validation
+    code.
+
+The backend checks the requested quantity against the available stock
+before creating the order.
+
+If the customer requests 10 units and the database has only 3, the
+condition fails and the backend returns a 400 error. The stock is not
+reduced and the order is not created.
+
+The validation is:
+
+if product[“stock”] < quantity: return jsonify({ “error”: f”Only
+{product[‘stock’]} units available” }), 400
+
+So, in this example:
+
+Requested quantity = 10 Available stock = 3
+
+Since 3 is less than 10, the backend returns an error instead of
+allowing the customer to place the order.
+
+The important part is that stock is checked before the stock is reduced.
+This prevents the application from creating orders with more items than
+are actually available.
+
+4.  What is the difference between ProtectedRoute and AdminRoute in your
+    app? Show both components.
+
+ProtectedRoute and AdminRoute are both used for access control, but they
+check different things.
+
+ProtectedRoute is used for pages that should only be available to
+logged-in users. If there is no logged-in user, it redirects the user to
+the login page.
+
+My ProtectedRoute is:
+
+import { Navigate } from ‘react-router-dom’ import { useAuth } from
+‘../context/AuthContext’
+
+export default function ProtectedRoute({ children }) { const { user,
+loading } = useAuth()
+
+if (loading) return null if (!user) return
+
+return children }
+
+AdminRoute is more restrictive. It first makes sure the user is logged
+in and then checks whether the user’s role is admin. If the user is not
+an admin, they are redirected back to the home page.
+
+My AdminRoute follows this logic:
+
+import { Navigate } from ‘react-router-dom’ import { useAuth } from
+‘../context/AuthContext’
+
+export default function AdminRoute({ children }) { const { user, loading
+} = useAuth()
+
+if (loading) return null if (!user) return if (user.role !== ‘admin’)
+return
+
+return children }
+
+So the simple difference is:
+
+ProtectedRoute = checks whether the user is logged in.
+
+AdminRoute = checks whether the user is logged in AND has the admin
+role.
+
+This prevents normal customers from accessing admin pages such as
+product management and order management.
