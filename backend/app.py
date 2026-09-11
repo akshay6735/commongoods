@@ -1,16 +1,3 @@
-"""
-E-Commerce Platform — Flask API
-Task 12 + Task 14
-
-Task 14:
-- Real image file uploads
-- multipart/form-data
-- Unique filenames using UUID
-- File type validation
-- 2 MB file size limit
-- Images served from /static/uploads/
-"""
-
 from flask import Flask, request, jsonify, session
 from flask_bcrypt import Bcrypt
 from flask_cors import CORS
@@ -21,19 +8,8 @@ from mysql.connector import Error
 from datetime import timedelta
 import os
 import uuid
+import math
 from dotenv import load_dotenv
-
-
-# ------------------------------------------------------------------
-# Environment
-# ------------------------------------------------------------------
-
-load_dotenv()
-
-
-# ------------------------------------------------------------------
-# Flask configuration
-# ------------------------------------------------------------------
 
 app = Flask(__name__)
 
@@ -46,17 +22,14 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = False
 app.permanent_session_lifetime = timedelta(days=7)
 
-
-# ------------------------------------------------------------------
-# Extensions
-# ------------------------------------------------------------------
-
 bcrypt = Bcrypt(app)
 
 CORS(
     app,
     supports_credentials=True,
-    origins=["http://localhost:5173"]
+    origins=["http://localhost:5173",
+             "http://localhost:5174"
+             ]
 )
 
 
@@ -382,76 +355,93 @@ def me():
 @app.route("/api/products", methods=["GET"])
 def get_products():
 
-    category = request.args.get("category")
-    search = request.args.get("search")
-    sort = request.args.get("sort")
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        limit = min(100, max(1, int(request.args.get("limit", 8))))
+    except (TypeError, ValueError):
+        return jsonify({"error": "page and limit must be valid numbers"}), 400
 
-    query = """
-        SELECT
-            p.id,
-            p.name,
-            p.description,
-            p.price,
-            p.stock,
-            p.category_id,
-            c.name AS category_name,
-            p.image_url,
-            p.created_at
-        FROM products p
-        LEFT JOIN categories c
-            ON p.category_id = c.id
-        WHERE 1=1
-    """
+    category = (request.args.get("category") or "").strip()
+    search = (request.args.get("search") or "").strip()
+    sort = (request.args.get("sort") or "").strip()
 
-    params = []
+    where = ["1=1"]
+    filter_params = []
 
     if category:
-
-        query += " AND c.name = %s"
-
-        params.append(category)
+        where.append("c.name = %s")
+        filter_params.append(category)
 
     if search:
-
-        query += """
-            AND (
-                p.name LIKE %s
-                OR p.description LIKE %s
-            )
-        """
-
+        where.append("(p.name LIKE %s OR p.description LIKE %s)")
         like = f"%{search}%"
+        filter_params.extend([like, like])
 
-        params.extend([
-            like,
-            like
-        ])
+    where_sql = " AND ".join(where)
 
     sort_map = {
-        "price_asc": " ORDER BY p.price ASC",
-        "price_desc": " ORDER BY p.price DESC",
-        "newest": " ORDER BY p.created_at DESC",
+        "price_asc": "p.price ASC",
+        "price_desc": "p.price DESC",
+        "newest": "p.created_at DESC",
     }
-
-    query += sort_map.get(
-        sort,
-        " ORDER BY p.id ASC"
-    )
+    order_by = sort_map.get(sort, "p.created_at DESC")
 
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute(query, params)
+    try:
+        # Count all records matching the current filters.
+        cur.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM products p
+            JOIN categories c ON p.category_id = c.id
+            WHERE {where_sql}
+            """,
+            filter_params,
+        )
+        total = int(cur.fetchone()[0])
+        total_pages = math.ceil(total / limit) if total else 0
 
-    rows = [
-        row_to_dict(cur, r)
-        for r in cur.fetchall()
-    ]
+        # Keep an out-of-range page from returning a misleading page.
+        if total_pages and page > total_pages:
+            page = total_pages
 
-    cur.close()
-    conn.close()
+        offset = (page - 1) * limit
 
-    return jsonify(rows)
+        cur.execute(
+            f"""
+            SELECT
+                p.id,
+                p.name,
+                p.description,
+                p.price,
+                p.stock,
+                p.category_id,
+                c.name AS category_name,
+                p.image_url,
+                p.created_at
+            FROM products p
+            JOIN categories c ON p.category_id = c.id
+            WHERE {where_sql}
+            ORDER BY {order_by}
+            LIMIT %s OFFSET %s
+            """,
+            filter_params + [limit, offset],
+        )
+
+        products = [row_to_dict(cur, r) for r in cur.fetchall()]
+
+        return jsonify({
+            "products": products,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "total_pages": total_pages,
+        })
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/api/products/<int:product_id>", methods=["GET"])
@@ -911,58 +901,73 @@ def my_orders():
 @admin_required
 def all_orders():
 
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        limit = min(100, max(1, int(request.args.get("limit", 10))))
+    except (TypeError, ValueError):
+        return jsonify({"error": "page and limit must be valid numbers"}), 400
+
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        SELECT
-            o.id,
-            o.total_amount,
-            o.status,
-            o.address,
-            o.ordered_at,
-            u.name AS customer_name,
-            u.email AS customer_email
-        FROM orders o
-        JOIN users u
-            ON o.user_id = u.id
-        ORDER BY o.ordered_at DESC
-        """
-    )
+    try:
+        cur.execute("SELECT COUNT(*) AS total FROM orders")
+        total = int(cur.fetchone()[0])
+        total_pages = math.ceil(total / limit) if total else 0
 
-    orders = [
-        row_to_dict(cur, r)
-        for r in cur.fetchall()
-    ]
+        if total_pages and page > total_pages:
+            page = total_pages
 
-    for order in orders:
+        offset = (page - 1) * limit
 
         cur.execute(
             """
             SELECT
-                oi.id,
-                oi.product_id,
-                p.name AS product_name,
-                oi.quantity,
-                oi.unit_price
-            FROM order_items oi
-            JOIN products p
-                ON oi.product_id = p.id
-            WHERE oi.order_id = %s
+                o.id,
+                o.total_amount,
+                o.status,
+                o.address,
+                o.ordered_at,
+                u.name AS customer_name,
+                u.email AS customer_email
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            ORDER BY o.ordered_at DESC
+            LIMIT %s OFFSET %s
             """,
-            (order["id"],)
+            (limit, offset),
         )
 
-        order["items"] = [
-            row_to_dict(cur, r)
-            for r in cur.fetchall()
-        ]
+        orders = [row_to_dict(cur, r) for r in cur.fetchall()]
 
-    cur.close()
-    conn.close()
+        for order in orders:
+            cur.execute(
+                """
+                SELECT
+                    oi.id,
+                    oi.product_id,
+                    p.name AS product_name,
+                    oi.quantity,
+                    oi.unit_price
+                FROM order_items oi
+                JOIN products p ON oi.product_id = p.id
+                WHERE oi.order_id = %s
+                """,
+                (order["id"],),
+            )
 
-    return jsonify(orders)
+            order["items"] = [row_to_dict(cur, r) for r in cur.fetchall()]
+
+        return jsonify({
+            "orders": orders,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "total_pages": total_pages,
+        })
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/api/orders/<int:order_id>/status", methods=["PUT"])

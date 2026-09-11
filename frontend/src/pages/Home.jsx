@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../api";
 import ProductCard from "../components/ProductCard.jsx";
+import Pagination from "../components/Pagination.jsx";
+import { useDebounce } from "../hooks/useDebounce.js";
 import { useReveal } from "../hooks/useReveal.js";
 
 function ProductGridSkeleton() {
@@ -24,7 +26,11 @@ export default function Home() {
   const [categories, setCategories] = useState([]);
   const [activeCategory, setActiveCategory] = useState(null);
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search, 300);
   const [sort, setSort] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [heroRef, heroVisible] = useReveal();
@@ -34,33 +40,50 @@ export default function Home() {
     api.get("/categories").then((res) => setCategories(res.data)).catch(() => {});
   }, []);
 
+  // A new search/filter starts from the first page.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearch, activeCategory, sort]);
+
   useEffect(() => {
     let cancelled = false;
-    const timer = setTimeout(async () => {
+
+    async function fetchProducts() {
       setLoading(true);
       setError("");
-      const params = {};
+
+      const params = {
+        page: currentPage,
+        limit: 8,
+        search: debouncedSearch.trim(),
+      };
       if (activeCategory) params.category = activeCategory;
-      if (search.trim()) params.search = search.trim();
       if (sort) params.sort = sort;
 
       try {
         const res = await api.get("/products", { params });
-        if (!cancelled) setProducts(res.data);
+        if (!cancelled) {
+          setProducts(res.data.products || []);
+          setTotal(res.data.total || 0);
+          setTotalPages(res.data.total_pages || 1);
+        }
       } catch {
         if (!cancelled) setError("We couldn't load the catalogue. Make sure the Flask server is running.");
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }, 220);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [activeCategory, search, sort]);
+    }
+
+    fetchProducts();
+    return () => { cancelled = true; };
+  }, [currentPage, debouncedSearch, activeCategory, sort]);
+
   const categoryLabels = {
-  "Kitchen & Table": "Rasoi & Table",
-  "Desk & Studio": "Kaam & Studio",
-  "Lighting": "Roshni",
-  "Outdoors": "Bahar & Travel",
-};
+    "Kitchen & Table": "Rasoi & Table",
+    "Desk & Studio": "Kaam & Studio",
+    "Lighting": "Roshni",
+    "Outdoors": "Bahar & Travel",
+  };
 
   return (
     <>
@@ -103,7 +126,7 @@ export default function Home() {
             <p>Everyday objects, thoughtfully chosen for modern Indian living.</p>
           </div>
           <span style={{ color: "var(--muted)", fontSize: 12, fontWeight: 700 }}>
-            {loading ? "Updating…" : `${products.length} pieces`}
+            {loading ? "Updating…" : `Showing ${products.length} of ${total} products`}
           </span>
         </div>
 
@@ -137,7 +160,7 @@ export default function Home() {
               <div className="empty-icon">⌕</div>
               <h3>No pieces found</h3>
               <p>Try a different search or clear the collection filter.</p>
-              <button className="btn btn-soft" style={{ marginTop: 18 }} onClick={() => { setSearch(""); setActiveCategory(null); }}>
+              <button className="btn btn-soft" style={{ marginTop: 18 }} onClick={() => { setSearch(""); setActiveCategory(null); setCurrentPage(1); }}>
                 Reset filters
               </button>
             </div>
@@ -147,6 +170,14 @@ export default function Home() {
             </div>
           )}
         </div>
+
+        {!loading && products.length > 0 && (
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            onPageChange={setCurrentPage}
+          />
+        )}
       </main>
     </>
   );
